@@ -27,6 +27,25 @@ const wibMinute = () => { const p = new Intl.DateTimeFormat('en-US', { timeZone:
 const wibDayIndex = () => ({ Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4 } as Record<string, number>)[new Intl.DateTimeFormat('en-US', { timeZone: WIB, weekday: 'short' }).format(new Date())] ?? -1;
 const isActiveDay = (settings: AppSettings) => settings.days[wibDayIndex()] === true;
 
+const playChime = () => {
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.35);
+  } catch {}
+};
+
 
 function App() {
   const [page, setPage] = useState<Page>('Dashboard');
@@ -43,11 +62,47 @@ function App() {
   const dateText = new Intl.DateTimeFormat('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: WIB }).format(now);
 
   useEffect(() => { const id = window.setInterval(() => setNow(new Date()), 1000); return () => window.clearInterval(id); }, []);
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  }, []);
   useEffect(() => localStorage.setItem('absensi-records', JSON.stringify(records)), [records]);
   useEffect(() => localStorage.setItem(settingsKey, JSON.stringify(settings)), [settings]);
-  const notify = (message: string) => {
-    setToast(message); window.setTimeout(() => setToast(''), 4200);
-    if (permission === 'granted') new Notification('Absensi Monev MagangHub', { body: message });
+  const notify = async (message: string) => {
+    setToast(message); window.setTimeout(() => setToast(''), 4500);
+    playChime();
+    if (!('Notification' in window)) {
+      setToast('Browser ini tidak mendukung notifikasi sistem.');
+      return;
+    }
+    let perm = Notification.permission;
+    if (perm === 'default') {
+      perm = await Notification.requestPermission();
+      setPermission(perm);
+    }
+    if (perm === 'denied') {
+      setToast('Izin notifikasi diblokir browser. Izinkan melalui ikon gembok dekat URL.');
+      return;
+    }
+    if (perm === 'granted') {
+      try {
+        if ('serviceWorker' in navigator) {
+          const reg = await navigator.serviceWorker.ready;
+          if (reg && 'showNotification' in reg) {
+            await reg.showNotification('Absensi Monev MagangHub', { body: message, icon: '/favicon.ico' });
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('SW notification fallback to Web Notification', err);
+      }
+      try {
+        new Notification('Absensi Monev MagangHub', { body: message });
+      } catch (err) {
+        console.error('Notification failed:', err);
+      }
+    }
   };
   useEffect(() => {
     if (!settings.enabled || today || !isActiveDay(settings)) return;
@@ -65,9 +120,13 @@ function App() {
     notify('Konfirmasi lokal tersimpan. Pastikan absensi resmi di portal Monev juga selesai.');
   };
   const request = async () => {
-    if (!('Notification' in window)) { notify('Browser ini tidak mendukung notifikasi.'); return; }
+    if (!('Notification' in window)) { setToast('Browser ini tidak mendukung notifikasi sistem.'); return; }
     const state = await Notification.requestPermission(); setPermission(state);
-    notify(state === 'granted' ? 'Notifikasi browser aktif.' : 'Izin notifikasi belum diizinkan.');
+    if (state === 'granted') {
+      notify('Izin notifikasi aktif! Notifikasi siap dikirim.');
+    } else if (state === 'denied') {
+      setToast('Izin notifikasi ditolak. Ubah melalui ikon gembok di dekat URL.');
+    }
   };
   const updateSettings = (patch: Partial<AppSettings>) => setSettings((value) => ({ ...value, ...patch }));
 
